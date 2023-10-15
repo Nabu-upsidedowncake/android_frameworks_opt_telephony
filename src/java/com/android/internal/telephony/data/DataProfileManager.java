@@ -78,10 +78,10 @@ public class DataProfileManager extends Handler {
     private final LocalLog mLocalLog = new LocalLog(128);
 
     /** Data network controller. */
-    private final @NonNull DataNetworkController mDataNetworkController;
+    protected final @NonNull DataNetworkController mDataNetworkController;
 
     /** Data config manager. */
-    private final @NonNull DataConfigManager mDataConfigManager;
+    protected final @NonNull DataConfigManager mDataConfigManager;
 
     /** Cellular data service. */
     private final @NonNull DataServiceManager mWwanDataServiceManager;
@@ -246,6 +246,8 @@ public class DataProfileManager extends Handler {
      *                     to modem.
      */
     private void updateDataProfiles(boolean forceUpdateIa) {
+        /** All APN settings applicable to the current carrier */
+        ArrayList<ApnSetting> allApnSettings = new ArrayList<>();
         List<DataProfile> profiles = new ArrayList<>();
         if (mDataConfigManager.isConfigCarrierSpecific()) {
             Cursor cursor = mPhone.getContext().getContentResolver().query(
@@ -259,14 +261,7 @@ public class DataProfileManager extends Handler {
             while (cursor.moveToNext()) {
                 ApnSetting apn = ApnSetting.makeApnSetting(cursor);
                 if (apn != null) {
-                    DataProfile dataProfile = new DataProfile.Builder()
-                            .setApnSetting(apn)
-                            .setTrafficDescriptor(new TrafficDescriptor(apn.getApnName(), null))
-                            .setPreferred(false)
-                            .build();
-                    profiles.add(dataProfile);
-                    log("Added " + dataProfile);
-
+                    allApnSettings.add(apn);
                     isInternetSupported |= apn.canHandleType(ApnSetting.TYPE_DEFAULT);
                     if (mDataConfigManager.isApnConfigAnomalyReportEnabled()) {
                         checkApnSetting(apn);
@@ -274,6 +269,20 @@ public class DataProfileManager extends Handler {
                 }
             }
             cursor.close();
+
+            if (!allApnSettings.isEmpty()) {
+                filterApnSettingsWithRadioCapability(allApnSettings);
+            }
+
+            for (ApnSetting apn : allApnSettings) {
+                DataProfile dataProfile = new DataProfile.Builder()
+                        .setApnSetting(apn)
+                        .setTrafficDescriptor(new TrafficDescriptor(apn.getApnName(), null))
+                        .setPreferred(false)
+                        .build();
+                profiles.add(dataProfile);
+                log("Added " + dataProfile);
+            }
 
             if (!isInternetSupported
                     && !profiles.isEmpty() // APN database has been read successfully
@@ -365,6 +374,13 @@ public class DataProfileManager extends Handler {
     }
 
     /**
+     * Filters out multiple APNs based on radio capability if the APN's GID value is listed in
+     * CarrierConfigManager#KEY_MULTI_APN_ARRAY_FOR_SAME_GID as per the operator requirement.
+     */
+    protected void filterApnSettingsWithRadioCapability(ArrayList<ApnSetting> allApnSettings) {
+    }
+
+    /**
      * @return The preferred data profile set id.
      */
     private int getPreferredDataProfileSetId() {
@@ -422,6 +438,10 @@ public class DataProfileManager extends Handler {
         // Update a working internet data profile as a future candidate for preferred data profile
         // after APNs are reset to default
         mLastInternetDataProfile = defaultProfile;
+
+        // If the preferred profile is one chosen for internet already, we don't need to do
+        // anything.
+        if (mPreferredDataProfile != null && mPreferredDataProfile.equals(defaultProfile)) return;
 
         // If the live default internet network is not using the preferred data profile, since
         // brought up a network means it passed sophisticated checks, update the preferred data
@@ -992,6 +1012,16 @@ public class DataProfileManager extends Handler {
     }
 
     /**
+     * Called by {@link DataRetryManager} to clear all permanent failures upon reset.
+     */
+    public void clearAllDataProfilePermanentFailures() {
+        mAllDataProfiles.stream()
+                .map(DataProfile::getApnSetting)
+                .filter(Objects::nonNull)
+                .forEach(apnSetting -> apnSetting.setPermanentFailed(false));
+    }
+
+    /**
      * Check if the provided data profile is still compatible with the current environment. Note
      * this method ignores APN id check and traffic descriptor check. A data profile with traffic
      * descriptor only can always be used in any condition.
@@ -1064,7 +1094,7 @@ public class DataProfileManager extends Handler {
      * Log debug messages.
      * @param s debug messages
      */
-    private void log(@NonNull String s) {
+    protected void log(@NonNull String s) {
         Rlog.d(mLogTag, s);
     }
 
@@ -1072,7 +1102,7 @@ public class DataProfileManager extends Handler {
      * Log error messages.
      * @param s error messages
      */
-    private void loge(@NonNull String s) {
+    protected void loge(@NonNull String s) {
         Rlog.e(mLogTag, s);
     }
 
@@ -1088,7 +1118,7 @@ public class DataProfileManager extends Handler {
      * Log debug messages and also log into the local log.
      * @param s debug messages
      */
-    private void logl(@NonNull String s) {
+    protected void logl(@NonNull String s) {
         log(s);
         mLocalLog.log(s);
     }

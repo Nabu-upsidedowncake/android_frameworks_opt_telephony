@@ -110,6 +110,7 @@ public class UiccProfile extends IccCard {
     private int mGsmUmtsSubscriptionAppIndex;
     private int mCdmaSubscriptionAppIndex;
     private int mImsSubscriptionAppIndex;
+    private int mApplicationCount;
     private UiccCardApplication[] mUiccApplications =
             new UiccCardApplication[IccCardStatus.CARD_MAX_APPS];
     private Context mContext;
@@ -331,12 +332,6 @@ public class UiccProfile extends IccCard {
         mLock = lock;
         mUiccCard = uiccCard;
         mPhoneId = phoneId;
-        // set current app type based on phone type - do this before calling update() as that
-        // calls updateIccAvailability() which uses mCurrentAppType
-        Phone phone = PhoneFactory.getPhone(phoneId);
-        if (phone != null) {
-            setCurrentAppType(phone.getPhoneType() == PhoneConstants.PHONE_TYPE_GSM);
-        }
 
         if (mUiccCard instanceof EuiccCard) {
             // for RadioConfig<1.2 eid is not known when the EuiccCard is constructed
@@ -346,7 +341,14 @@ public class UiccProfile extends IccCard {
 
         update(c, ci, ics);
         ci.registerForOffOrNotAvailable(mHandler, EVENT_RADIO_OFF_OR_UNAVAILABLE, null);
+
+        Phone phone = PhoneFactory.getPhone(phoneId);
+        if (phone != null) {
+            setCurrentAppType(phone.getPhoneType() == PhoneConstants.PHONE_TYPE_GSM);
+        }
+
         resetProperties();
+        updateIccAvailability(false);
 
         mCarrierConfigManager = c.getSystemService(CarrierConfigManager.class);
         // Listener callback directly handles config change and thus runs on handler thread
@@ -422,7 +424,6 @@ public class UiccProfile extends IccCard {
     }
 
     private void setCurrentAppType(boolean isGsm) {
-        if (VDBG) log("setCurrentAppType");
         int primaryAppType;
         int secondaryAppType;
         if (isGsm) {
@@ -440,6 +441,7 @@ public class UiccProfile extends IccCard {
                 mCurrentAppType = secondaryAppType;
             }
         }
+        log("setCurrentAppType to be " + mCurrentAppType);
     }
 
     /**
@@ -720,24 +722,16 @@ public class UiccProfile extends IccCard {
                 break;
             case APPSTATE_READY:
                 checkAndUpdateIfAnyAppToBeIgnored();
-                if (areAllApplicationsReady()) {
-                    if (areAllRecordsLoaded() && areCarrierPrivilegeRulesLoaded()) {
-                        if (VDBG) log("updateExternalState: setting state to LOADED");
-                        setExternalState(IccCardConstants.State.LOADED);
-                    } else {
-                        if (VDBG) {
-                            log("updateExternalState: setting state to READY; records loaded "
-                                    + areAllRecordsLoaded() + ", carrier privilige rules loaded "
-                                    + areCarrierPrivilegeRulesLoaded());
-                        }
-                        setExternalState(IccCardConstants.State.READY);
-                    }
+                if (areReadyAppsRecordsLoaded() && areCarrierPrivilegeRulesLoaded()) {
+                    if (VDBG) log("updateExternalState: setting state to LOADED");
+                    setExternalState(IccCardConstants.State.LOADED);
                 } else {
                     if (VDBG) {
-                        log("updateExternalState: app state is READY but not for all apps; "
-                                + "setting state to NOT_READY");
+                        log("updateExternalState: setting state to READY; records loaded "
+                            + areReadyAppsRecordsLoaded() + ", carrier privilige rules loaded "
+                            + areCarrierPrivilegeRulesLoaded());
                     }
-                    setExternalState(IccCardConstants.State.NOT_READY);
+                        setExternalState(IccCardConstants.State.READY);
                 }
                 break;
         }
@@ -802,7 +796,8 @@ public class UiccProfile extends IccCard {
             if (mExternalState == IccCardConstants.State.LOADED) {
                 // Update the MCC/MNC.
                 if (mIccRecords != null) {
-                    String operator = mIccRecords.getOperatorNumeric();
+                    Phone currentPhone = PhoneFactory.getPhone(mPhoneId);
+                    String operator = currentPhone.getOperatorNumeric();
                     log("setExternalState: operator=" + operator + " mPhoneId=" + mPhoneId);
 
                     if (!TextUtils.isEmpty(operator)) {
@@ -1121,6 +1116,7 @@ public class UiccProfile extends IccCard {
             mGsmUmtsSubscriptionAppIndex = ics.mGsmUmtsSubscriptionAppIndex;
             mCdmaSubscriptionAppIndex = ics.mCdmaSubscriptionAppIndex;
             mImsSubscriptionAppIndex = ics.mImsSubscriptionAppIndex;
+            mApplicationCount = ics.mApplications.length;
             mContext = c;
             mCi = ci;
             mTelephonyManager = (TelephonyManager) mContext.getSystemService(
@@ -1244,33 +1240,19 @@ public class UiccProfile extends IccCard {
         }
     }
 
-    private boolean areAllApplicationsReady() {
+    private boolean areReadyAppsRecordsLoaded() {
         for (UiccCardApplication app : mUiccApplications) {
-            if (app != null && isSupportedApplication(app) && !app.isReady()
+            if (app != null && isSupportedApplication(app) && app.isReady()
                     && !app.isAppIgnored()) {
-                if (VDBG) log("areAllApplicationsReady: return false");
-                return false;
-            }
-        }
-
-        if (VDBG) {
-            log("areAllApplicationsReady: outside loop, return " + (mUiccApplication != null));
-        }
-        return mUiccApplication != null;
-    }
-
-    private boolean areAllRecordsLoaded() {
-        for (UiccCardApplication app : mUiccApplications) {
-            if (app != null && isSupportedApplication(app) && !app.isAppIgnored()) {
                 IccRecords ir = app.getIccRecords();
                 if (ir == null || !ir.isLoaded()) {
-                    if (VDBG) log("areAllRecordsLoaded: return false");
+                    if (VDBG) log("areReadyAppsRecordsLoaded: return false");
                     return false;
                 }
             }
         }
         if (VDBG) {
-            log("areAllRecordsLoaded: outside loop, return " + (mUiccApplication != null));
+            log("areReadyAppsRecordsLoaded: outside loop, return " + (mUiccApplication != null));
         }
         return mUiccApplication != null;
     }
@@ -1674,7 +1656,7 @@ public class UiccProfile extends IccCard {
     public boolean areCarrierPrivilegeRulesLoaded() {
         UiccCarrierPrivilegeRules carrierPrivilegeRules = getCarrierPrivilegeRules();
         return carrierPrivilegeRules == null
-                || carrierPrivilegeRules.areCarrierPriviligeRulesLoaded();
+                || carrierPrivilegeRules.areCarrierPrivilegeRulesLoaded();
     }
 
     /**
@@ -1778,11 +1760,13 @@ public class UiccProfile extends IccCard {
      */
     public String getIccId() {
         // ICCID should be same across all the apps.
-        for (UiccCardApplication app : mUiccApplications) {
-            if (app != null) {
-                IccRecords ir = app.getIccRecords();
-                if (ir != null && ir.getIccId() != null) {
-                    return ir.getIccId();
+        if (mUiccApplications != null) {
+            for (UiccCardApplication app : mUiccApplications) {
+                if (app != null) {
+                    IccRecords ir = app.getIccRecords();
+                    if (ir != null && ir.getIccId() != null) {
+                        return ir.getIccId();
+                    }
                 }
             }
         }
